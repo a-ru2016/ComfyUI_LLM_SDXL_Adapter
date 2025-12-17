@@ -1,5 +1,9 @@
 import torch
 import logging
+try:
+    import comfy.model_management
+except ImportError:
+    pass
 
 logger = logging.getLogger("LLM-SDXL-Adapter")
 
@@ -45,8 +49,21 @@ class LLMTextEncoder:
         Encode text using Language Model and return hidden states
         """
         try:
-            # Get model device
-            device = next(model.parameters()).device
+            # Determine execution device
+            try:
+                execution_device = comfy.model_management.get_torch_device()
+            except:
+                execution_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            # Check where the model currently is
+            model_device = next(model.parameters()).device
+            moved_to_gpu = False
+            
+            # If model is on CPU, move to execution device (GPU) for inference
+            if model_device.type == 'cpu' and execution_device.type != 'cpu':
+                logger.info(f"Moving model to {execution_device} for inference...")
+                model.to(execution_device)
+                moved_to_gpu = True
             
             # Prepare chat template
             messages = [
@@ -71,7 +88,7 @@ class LLMTextEncoder:
                 return_dict=True,
                 return_tensors="pt",
                 add_generation_prompt=True,
-            ).to(device)
+            ).to(model.device) # Ensure inputs are on the same device as model
             
             # Generate hidden states
             with torch.no_grad():
@@ -79,6 +96,12 @@ class LLMTextEncoder:
                 
             # Extract hidden states, skipping first tokens
             hidden_states = outputs['hidden_states'][-1][:, skip_first:, :].to(torch.float)
+            
+            # If we moved model to GPU, move it back to CPU to save VRAM
+            if moved_to_gpu:
+                logger.info("Moving model back to CPU...")
+                model.to("cpu")
+                torch.cuda.empty_cache()
             
             # Prepare info
             info = f"Text: {text[:50]}...\nTokens after skip: {hidden_states.shape[1]}\nShape: {hidden_states.shape}"

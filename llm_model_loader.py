@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 import gc
 import logging
 from .utils import get_llm_checkpoints, get_llm_checkpoint_path
@@ -31,6 +31,12 @@ class LLMModelLoader:
                 "device": (["auto", "cuda:0", "cuda:1", "cpu"], {
                     "default": "auto"
                 }),
+                "dtype": (["auto", "fp16", "bf16", "fp32"], {
+                    "default": "auto"
+                }),
+                "quantization": (["none", "8bit", "4bit"], {
+                    "default": "none"
+                }),
                 "force_reload": ("BOOLEAN", {
                     "default": False
                 }),
@@ -42,7 +48,7 @@ class LLMModelLoader:
     FUNCTION = "load_model"
     CATEGORY = "llm_sdxl"
     
-    def load_model(self, model_name, device="auto", force_reload=False):
+    def load_model(self, model_name, device="auto", dtype="auto", quantization="none", force_reload=False):
         """Load Language Model and tokenizer"""
         if device == "auto":
             device = self.device
@@ -61,10 +67,40 @@ class LLMModelLoader:
                 
                 logger.info(f"Loading Language Model from {model_path}")
                 
+                # Prepare quantization config
+                quantization_config = None
+                if quantization == "8bit":
+                    quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+                elif quantization == "4bit":
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.bfloat16 if dtype == "bf16" else torch.float16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4"
+                    )
+                
+                # Prepare torch dtype
+                torch_dtype = "auto"
+                if dtype == "fp16":
+                    torch_dtype = torch.float16
+                elif dtype == "bf16":
+                    torch_dtype = torch.bfloat16
+                elif dtype == "fp32":
+                    torch_dtype = torch.float32
+
+                # If quantized, device_map must be handled by accelerate usually, but we try to respect 'device' if not 'auto'
+                # For 4bit/8bit, device_map="auto" or specific device is often needed.
+                load_device_map = device
+                if quantization != "none":
+                     # When quantized, 'auto' is usually best to let accelerate handle dispatch
+                     if device == "cpu":
+                         logger.warning("Quantization on CPU is not supported by bitsandbytes. Ignoring quantization or expects GPU.")
+                
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_path,
-                    torch_dtype=torch.bfloat16,
-                    device_map=device,
+                    torch_dtype=torch_dtype,
+                    quantization_config=quantization_config,
+                    device_map=load_device_map,
                     output_hidden_states=True,
                     trust_remote_code=True
                 )
@@ -75,9 +111,9 @@ class LLMModelLoader:
                 )
                 
                 self.current_model_path = model_path
-                logger.info("Language Model loaded successfully")
+                logger.info(f"Language Model loaded successfully. Device: {self.model.device}, Dtype: {self.model.dtype}, Quantization: {quantization}")
             
-            info = f"Model: {model_path}\nDevice: {device}\nLoaded: {self.model is not None}"
+            info = f"Model: {model_path}\nDevice: {device}\nDtype: {dtype}\nQuantization: {quantization}\nLoaded: {self.model is not None}"
             
             return (self.model, self.tokenizer, info)
             

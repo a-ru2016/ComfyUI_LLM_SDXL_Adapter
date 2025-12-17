@@ -160,12 +160,24 @@ class LLMToSDXLAdapter(nn.Module):
         else:
             hidden_states = llm_hidden_states  
 
-        # Padding/truncation to max_input_len
+        # Handle Positional Embeddings and Sequence Length
         if seq_len > self.max_input_len:
-            hidden_states = hidden_states[:, :self.max_input_len, :]
-            if attention_mask is not None:
-                attention_mask = attention_mask[:, :self.max_input_len]
+            # Interpolate position embeddings to match current sequence length
+            pos_emb = self.input_position_embeddings # (1, max_len, dim)
+            pos_emb = pos_emb.permute(0, 2, 1) # (1, dim, max_len)
+            pos_emb = torch.nn.functional.interpolate(
+                pos_emb, 
+                size=seq_len, 
+                mode='linear', 
+                align_corners=False
+            )
+            pos_emb = pos_emb.permute(0, 2, 1) # (1, len, dim)
+            
+            # Use the interpolated positional embeddings
+            hidden_states = hidden_states + pos_emb
+            
         else:
+            # Pad if shorter
             if seq_len < self.max_input_len:
                 hidden_states = pad_to_length(hidden_states, self.max_input_len, dim=1)
                 if attention_mask is not None:
@@ -173,9 +185,9 @@ class LLMToSDXLAdapter(nn.Module):
                 else:
                     attention_mask = torch.ones(batch_size, self.max_input_len, device=hidden_states.device)
                     attention_mask[:, seq_len:] = 0
-
-        # Add positional embeddings
-        hidden_states = hidden_states + self.input_position_embeddings
+            
+            # Use standard positional embeddings
+            hidden_states = hidden_states + self.input_position_embeddings
 
         # ===== STAGE 1: Wide Processing (full sequence) =====
         for block in self.wide_attention_blocks:
