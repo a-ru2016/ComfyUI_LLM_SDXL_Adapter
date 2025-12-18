@@ -1,8 +1,8 @@
-(tag:2),(tag),[tag]に対応
-BREAKに対応
-拡散中オフロード対応
-8bitに対応
-長文プロンプトに対応
+(tag:2),(tag),[tag]に対応,
+BREAKに対応,
+拡散中オフロード対応,
+8bitに対応,
+長文プロンプトに対応,
 
 # ComfyUI LLM SDXL Adapter
 
